@@ -1,0 +1,223 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  CUSTOMER
+  DRIVER
+  ADMIN
+}
+
+enum OtpPurpose {
+  REGISTER
+}
+
+enum OrderStatus {
+  PENDING_PAYMENT
+  PLACED
+  CONFIRMED
+  DISPATCHED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  MPESA
+  CARD
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+model User {
+  id            String    @id @default(uuid())
+  name          String
+  phone         String    @unique // E.164, e.g. +254712345678
+  email         String?   @unique
+  passwordHash  String
+  role          Role      @default(CUSTOMER)
+  phoneVerified Boolean   @default(false)
+  isActive      Boolean   @default(true)
+  failedLogins  Int       @default(0)
+  lockedUntil   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  otpCodes      OtpCode[]
+  refreshTokens RefreshToken[]
+  addresses     Address[]
+  orders        Order[]        @relation("CustomerOrders")
+  deliveries    Order[]        @relation("DriverOrders")
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+model OtpCode {
+  id         String     @id @default(uuid())
+  userId     String
+  purpose    OtpPurpose
+  codeHash   String
+  attempts   Int        @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose, createdAt])
+  @@index([expiresAt])
+  @@map("otp_codes")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  ip        String?
+  userAgent String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
+model Address {
+  id        String   @id @default(uuid())
+  userId    String
+  label     String // Home, Office...
+  latitude  Float
+  longitude Float
+  details   String? // Estate, building, gate, landmarks
+  archived  Boolean  @default(false) // soft delete, orders keep their address
+  createdAt DateTime @default(now())
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  @@index([userId])
+  @@map("addresses")
+}
+
+model Product {
+  id        String   @id @default(uuid())
+  sku       String   @unique
+  name      String
+  priceKes  Int // whole shillings (M-Pesa requires integers)
+  stock     Int      @default(0)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items OrderItem[]
+
+  @@map("products")
+}
+
+model Order {
+  id          String      @id @default(uuid())
+  number      Int         @unique @default(autoincrement()) // human-friendly order number
+  userId      String
+  addressId   String
+  driverId    String?
+  status      OrderStatus @default(PENDING_PAYMENT)
+  subtotalKes Int
+  deliveryFeeKes Int      @default(0)
+  totalKes    Int
+  notes       String?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  user     User        @relation("CustomerOrders", fields: [userId], references: [id])
+  driver   User?       @relation("DriverOrders", fields: [driverId], references: [id])
+  address  Address     @relation(fields: [addressId], references: [id])
+  items    OrderItem[]
+  payments Payment[]
+  events   OrderEvent[]
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+  @@index([driverId, status])
+  @@map("orders")
+}
+
+model OrderItem {
+  id           String @id @default(uuid())
+  orderId      String
+  productId    String
+  quantity     Int
+  unitPriceKes Int
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@map("order_items")
+}
+
+model Payment {
+  id                String        @id @default(uuid())
+  orderId           String
+  method            PaymentMethod
+  status            PaymentStatus @default(PENDING)
+  amountKes         Int
+  phone             String? // M-Pesa payer number
+  checkoutRequestId String?       @unique // Daraja STK push id
+  merchantRequestId String?
+  mpesaReceipt      String?       @unique // unique => callbacks are idempotent
+  gatewayReference  String?       @unique // card gateway transaction ref
+  resultCode        Int?
+  resultDesc        String?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@index([status, createdAt])
+  @@map("payments")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  actorId   String
+  action    String
+  target    String?
+  metadata  Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  actor User @relation(fields: [actorId], references: [id])
+
+  @@index([actorId, createdAt])
+  @@map("audit_logs")
+}
+
+model OrderEvent {
+  id        String      @id @default(uuid())
+  orderId   String
+  status    OrderStatus
+  note      String?
+  actorId   String?
+  createdAt DateTime    @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_events")
+}
